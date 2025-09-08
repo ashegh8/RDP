@@ -1,4 +1,4 @@
-name: RDP
+name: RDP-ExitNode
 
 on:
   workflow_dispatch:
@@ -22,11 +22,11 @@ jobs:
           # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
-          # For testing, allow any incoming connection on port 3389
+          # Allow incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          # Restart Remote Desktop service to apply changes
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
@@ -66,10 +66,13 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
+      - name: Establish Tailscale Connection (with Exit Node)
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Bring up Tailscale with exit node advertisement
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-runner-$env:GITHUB_RUN_ID `
+            --advertise-exit-node
           
           # Wait for Tailscale to assign an IP
           $tsIP = $null
@@ -85,7 +88,10 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
+
+          # Show status (should confirm Exit Node capability)
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
@@ -98,16 +104,27 @@ jobs:
           }
           Write-Host "TCP connectivity successful!"
 
+      - name: Verify Exit Node Internet Access
+        run: |
+          Write-Host "Testing external IP (through Exit Node)..."
+          try {
+              $publicIP = Invoke-RestMethod -Uri "https://ifconfig.me/ip" -UseBasicParsing
+              Write-Host "Public IP (Exit Node): $publicIP"
+          } catch {
+              Write-Error "Failed to fetch public IP"
+              exit 1
+          }
+
       - name: Maintain Connection
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "`n=== RDP & EXIT NODE INFO ==="
+          Write-Host "Tailscale Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          Write-Host "Exit Node is active. Public IP tested above."
+          Write-Host "==============================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date)] RDP & Exit Node Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
